@@ -27,15 +27,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install OpenClaw
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install OpenClaw (Official)
         run: |
-          # Use GH_TOKEN to authenticate cloning private/internal repo or just use public URL
-          # If the repo is public, this works without auth. If private, it uses the automatic GITHUB_TOKEN.
-          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/joe12803/openclaw-codespace-deploy ~/openclaw || \
-          git clone --depth 1 https://github.com/joe12803/openclaw-codespace-deploy ~/openclaw
-          
+          # Clone Official OpenClaw Repository
+          git clone --depth 1 https://github.com/OpenClaw/OpenClaw ~/openclaw
           cd ~/openclaw
           pip install -r requirements.txt || true
 
@@ -53,7 +48,7 @@ jobs:
           AUTH_TOKEN: ${{ secrets.OPENCLAW_AUTH_TOKEN || 'sk-123456' }}
         run: |
           mkdir -p ~/openclaw/config
-          # Generate credentials file
+          # Generate credentials file based on official OpenClaw expected format
           cat <<EOF > ~/openclaw/config/credentials.json
           {
             "gemini": "${GEMINI_COOKIE}",
@@ -92,13 +87,14 @@ jobs:
           
           # Start OpenClaw in background
           cd ~/openclaw
+          # Official OpenClaw main entry is usually main.py or run.py
           python main.py &
           
           # Start Tunnel
           cloudflared tunnel --url http://localhost:8001 &
           
           # Keep alive
-          echo "OpenClaw is running. Check logs for Cloudflare URL."
+          echo "Official OpenClaw is running. Check logs for Cloudflare URL."
           sleep 21600
 
       - name: Final Data Sync
