@@ -1,0 +1,108 @@
+name: OpenClaw Actions Runner
+on:
+  workflow_dispatch:
+    inputs:
+      run_bridge:
+        description: 'Start OpenClaw API Bridge'
+        type: boolean
+        default: true
+      run_tunnel:
+        description: 'Enable Cloudflare Tunnel for Public API Access'
+        type: boolean
+        default: true
+
+jobs:
+  run-openclaw:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install OpenClaw
+        run: |
+          git clone --depth 1 https://github.com/joe12803/openclaw-codespace-deploy ~/openclaw
+          cd ~/openclaw
+          pip install -r requirements.txt || true
+
+      - name: Restore Data
+        run: |
+          mkdir -p ~/.openclaw
+          if [ -d ".openclaw-data" ]; then
+            cp -r .openclaw-data/* ~/.openclaw/ || true
+          fi
+
+      - name: Configure OpenClaw
+        env:
+          GEMINI_COOKIE: ${{ secrets.GEMINI_COOKIE }}
+          CLAUDE_COOKIE: ${{ secrets.CLAUDE_COOKIE }}
+          AUTH_TOKEN: ${{ secrets.OPENCLAW_AUTH_TOKEN || 'sk-123456' }}
+        run: |
+          mkdir -p ~/openclaw/config
+          # Generate credentials file
+          cat <<EOF > ~/openclaw/config/credentials.json
+          {
+            "gemini": "${GEMINI_COOKIE}",
+            "claude": "${CLAUDE_COOKIE}"
+          }
+          EOF
+          # Set up .env
+          echo "AUTH_TOKEN=${AUTH_TOKEN}" > ~/openclaw/.env
+          echo "PORT=8001" >> ~/openclaw/.env
+
+      - name: Start Background Auto-Sync
+        run: |
+          cat <<'EOF' > sync.sh
+          while true; do
+            sleep 600
+            mkdir -p .openclaw-data
+            cp -r ~/openclaw/config .openclaw-data/ || true
+            cp -r ~/openclaw/logs .openclaw-data/ || true
+            git config --global user.name "openclaw-bot"
+            git config --global user.email "openclaw-bot@users.noreply.github.com"
+            git add .openclaw-data
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: auto-sync openclaw state [skip ci]"
+              git push origin main || echo "Push failed"
+            fi
+          done
+          EOF
+          chmod +x sync.sh
+          ./sync.sh &
+
+      - name: Start OpenClaw and Tunnel
+        run: |
+          # Install Cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          
+          # Start OpenClaw in background
+          cd ~/openclaw
+          python main.py &
+          
+          # Start Tunnel
+          cloudflared tunnel --url http://localhost:8001 &
+          
+          # Keep alive
+          echo "OpenClaw is running. Check logs for Cloudflare URL."
+          sleep 21600
+
+      - name: Final Data Sync
+        if: always()
+        run: |
+          mkdir -p .openclaw-data
+          cp -r ~/openclaw/config .openclaw-data/ || true
+          cp -r ~/openclaw/logs .openclaw-data/ || true
+          git config --global user.name "openclaw-bot"
+          git config --global user.email "openclaw-bot@users.noreply.github.com"
+          git add .openclaw-data
+          git commit -m "docs: final state sync" || echo "No changes"
+          git push origin main
