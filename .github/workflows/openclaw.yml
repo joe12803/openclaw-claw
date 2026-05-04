@@ -6,10 +6,6 @@ on:
         description: 'Start OpenClaw API Bridge'
         type: boolean
         default: true
-      run_tunnel:
-        description: 'Enable Cloudflare Tunnel for Public API Access'
-        type: boolean
-        default: true
 
 jobs:
   run-openclaw:
@@ -19,20 +15,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.10'
+          node-version: '22'
 
       - name: Install OpenClaw (Official)
         run: |
-          # Clone Official OpenClaw Repository
           git clone --depth 1 https://github.com/OpenClaw/OpenClaw ~/openclaw
           cd ~/openclaw
-          pip install -r requirements.txt || true
+          npm install
 
       - name: Restore Data
         run: |
@@ -47,17 +40,23 @@ jobs:
           CLAUDE_COOKIE: ${{ secrets.CLAUDE_COOKIE }}
           AUTH_TOKEN: ${{ secrets.OPENCLAW_AUTH_TOKEN || 'sk-123456' }}
         run: |
+          # Official OpenClaw uses .env and config.json
           mkdir -p ~/openclaw/config
-          # Generate credentials file based on official OpenClaw expected format
-          cat <<EOF > ~/openclaw/config/credentials.json
+          cat <<EOF > ~/openclaw/config/config.json
           {
-            "gemini": "${GEMINI_COOKIE}",
-            "claude": "${CLAUDE_COOKIE}"
+            "providers": {
+              "gemini": {
+                "cookie": "${GEMINI_COOKIE}"
+              },
+              "claude": {
+                "cookie": "${CLAUDE_COOKIE}"
+              }
+            },
+            "auth": {
+              "token": "${AUTH_TOKEN}"
+            }
           }
           EOF
-          # Set up .env
-          echo "AUTH_TOKEN=${AUTH_TOKEN}" > ~/openclaw/.env
-          echo "PORT=8001" >> ~/openclaw/.env
 
       - name: Start Background Auto-Sync
         run: |
@@ -85,16 +84,14 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
-          # Start OpenClaw in background
+          # Start OpenClaw
           cd ~/openclaw
-          # Official OpenClaw main entry is usually main.py or run.py
-          python main.py &
+          npm start &
           
           # Start Tunnel
           cloudflared tunnel --url http://localhost:8001 &
           
-          # Keep alive
-          echo "Official OpenClaw is running. Check logs for Cloudflare URL."
+          echo "Official OpenClaw (Node.js) is running."
           sleep 21600
 
       - name: Final Data Sync
