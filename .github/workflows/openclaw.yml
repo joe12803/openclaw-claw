@@ -28,8 +28,14 @@ jobs:
           python-version: '3.10'
 
       - name: Install OpenClaw
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Use GH_TOKEN to authenticate cloning private/internal repo or just use public URL
+          # If the repo is public, this works without auth. If private, it uses the automatic GITHUB_TOKEN.
+          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/joe12803/openclaw-codespace-deploy ~/openclaw || \
           git clone --depth 1 https://github.com/joe12803/openclaw-codespace-deploy ~/openclaw
+          
           cd ~/openclaw
           pip install -r requirements.txt || true
 
