@@ -1,0 +1,13 @@
+{
+  "providers": {
+    "gemini": {
+      "cookie": ""
+    },
+    "claude": {
+      "cookie": ""
+    }
+  },
+  "auth": {
+    "token": "sk-123456"
+  }
+}
