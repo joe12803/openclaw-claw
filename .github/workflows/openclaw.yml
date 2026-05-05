@@ -2,6 +2,14 @@ name: OpenClaw Runner
 on:
   workflow_dispatch:
     inputs:
+      relay_api_base:
+        description: 'Relay API Base URL'
+        default: 'https://openclaw.994938.xyz/v1'
+        required: true
+      relay_api_key:
+        description: 'Relay API Key'
+        default: 'sk-KhbSk9pyLHkw8AzPy'
+        required: true
       run_openclaw:
         description: 'Start OpenClaw Service'
         type: boolean
@@ -27,19 +35,16 @@ jobs:
 
       - name: Install via Official Script
         run: |
-          # 使用 yes 命令强行喂给安装脚本回车，并忽略最后的交互式 TTY 报错
           yes "" | curl -fsSL https://openclaw.ai/install.sh | bash || echo "Installation finished with expected TTY warning."
-          # 确保 bin 目录在 PATH 中
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Configure OpenClaw
         env:
-          RELAY_API_KEY: "sk-KhbSk9pyLHkw8AzPy"
-          RELAY_API_BASE: "https://openclaw.994938.xyz/v1"
+          RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
+          RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
           mkdir -p ~/.openclaw/config
-          # 创建统一配置文件，跳过引导
           cat <<EOF > ~/.openclaw/config.json
           {
             "server": { "port": 3002, "host": "0.0.0.0" },
@@ -48,7 +53,7 @@ jobs:
             },
             "providers": [
               {
-                "id": "relay-gemini",
+                "id": "relay-api",
                 "type": "openai",
                 "enabled": true,
                 "config": {
@@ -65,10 +70,8 @@ jobs:
 
       - name: Start OpenClaw
         run: |
-          # 关键：设置环境变量并直接启动 Gateway，不跑 setup
           export OPENCLAW_NONINTERACTIVE=true
           export CI=true
-          # 使用 unbuffer 再次保险，并后台运行
           sudo apt-get install -y expect
           unbuffer openclaw gateway > openclaw.log 2>&1 &
           
@@ -109,11 +112,9 @@ jobs:
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 官方脚本部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
-          # Telegram
           if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
               requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
           
-          # Feishu
           if os.environ.get('FEISHU_APP_ID') and os.environ.get('FEISHU_APP_SECRET'):
               fs_id = os.environ['FEISHU_APP_ID']
               fs_secret = os.environ['FEISHU_APP_SECRET']
