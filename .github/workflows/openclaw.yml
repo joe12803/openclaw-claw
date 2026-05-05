@@ -41,18 +41,19 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Configure OpenClaw with Full Adapters
+      - name: Configure OpenClaw (Full Routing)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_ALLOWED_USER: ${{ secrets.TELEGRAM_CHAT_ID }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
           cd ~/openclaw-src
           mkdir -p config
+          
+          # 1. 主配置文件
           cat <<EOF > config/config.json
           {
             "server": { "port": 18789, "host": "0.0.0.0" },
@@ -69,17 +70,14 @@ jobs:
                   "baseUrl": "${RELAY_API_BASE}"
                 },
                 "models": [
-                  { "id": "gemini-3-flash", "name": "Gemini 3 Flash (Relay)", "default": true }
+                  { "id": "gemini-3-flash", "name": "Gemini 3 Flash", "default": true }
                 ]
               }
             ],
             "adapters": {
               "telegram": {
                 "enabled": true,
-                "config": {
-                  "token": "${TELEGRAM_BOT_TOKEN}",
-                  "allowedUsers": ["${TELEGRAM_ALLOWED_USER}"]
-                }
+                "config": { "token": "${TELEGRAM_BOT_TOKEN}" }
               },
               "feishu": {
                 "enabled": true,
@@ -91,6 +89,18 @@ jobs:
             }
           }
           EOF
+
+          # 2. 路由配置文件 (关键！)
+          # 强制让 main agent 使用我们的 relay-api
+          cat <<EOF > config/agents.json
+          {
+            "main": {
+              "model": "relay-api/gemini-3-flash",
+              "parameters": { "temperature": 0.7 }
+            }
+          }
+          EOF
+          
           cp config/config.json ./openclaw.json
 
       - name: Start OpenClaw
@@ -99,13 +109,15 @@ jobs:
           export CI=true
           sudo apt-get install -y expect
           cd ~/openclaw-src
+          # 启动时打印更多调试信息
           unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
+          
           echo "Waiting for OpenClaw Gateway..."
           MAX_RETRIES=40
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:18789 > /dev/null; then
-              echo "✅ OpenClaw is up with Bot Adapters!"
+              echo "✅ OpenClaw is up with Bot Adapters and Routing!"
               break
             fi
             sleep 5
@@ -141,24 +153,21 @@ jobs:
           done
           
           if [ -z "$DETECTED" ]; then
-            echo "❌ No Tunnel URL detected"
-            exit 0
+             echo "❌ Tunnel URL detection failed."
+             exit 0
           fi
 
           python3 - <<EOF
           import os, requests, json
           url = "$DETECTED"
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
-          msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
+          msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 默认模型: gemini-3-flash"
           
-          # Telegram
           tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
           tg_id = os.environ.get('TELEGRAM_CHAT_ID')
           if tg_token and tg_id:
-              r = requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
-              print(f"Telegram Status: {r.status_code}")
+              requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
           
-          # Feishu
           fs_id = os.environ.get('FEISHU_APP_ID')
           fs_secret = os.environ.get('FEISHU_APP_SECRET')
           fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
@@ -170,8 +179,7 @@ jobs:
                   send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={id_type}"
                   headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
                   payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
-                  r = requests.post(send_url, headers=headers, json=payload)
-                  print(f"Feishu Status: {r.status_code}")
+                  requests.post(send_url, headers=headers, json=payload)
           EOF
 
       - name: Keep Alive
