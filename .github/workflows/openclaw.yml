@@ -163,6 +163,9 @@ jobs:
           tg_id = os.environ.get('TELEGRAM_CHAT_ID')
           if tg_token and tg_id:
               requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
+              webhook_url = f"{url}/telegram/webhook"
+              wh_res = requests.post(f"https://api.telegram.org/bot{tg_token}/setWebhook", json={"url": webhook_url})
+              print(f"Telegram webhook registered: {wh_res.json()}")
           
           fs_id = os.environ.get('FEISHU_APP_ID')
           fs_secret = os.environ.get('FEISHU_APP_SECRET')
