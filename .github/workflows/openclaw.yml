@@ -42,19 +42,13 @@ jobs:
           cd ~/openclaw-src
           mkdir -p config
           
-          # 创建主配置文件，锁定 3002 端口
-          cat <<EOF > openclaw.json
+          # 创建配置。OpenClaw 最新版可能更偏好 config/config.json
+          cat <<EOF > config/config.json
           {
             "server": { "port": 3002, "host": "0.0.0.0" },
             "gateway": {
               "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" }
-            }
-          }
-          EOF
-
-          # 创建 Provider 配置 (中转 API)
-          cat <<EOF > config/providers.json
-          {
+            },
             "providers": [
               {
                 "id": "relay-gemini",
@@ -71,33 +65,41 @@ jobs:
             ]
           }
           EOF
-          echo "✅ Configured relay API for initial testing."
-
-      - name: Install Cloudflared
-        run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          pip install requests
+          # 建立软链接确保主目录也能找到
+          cp config/config.json ./openclaw.json
+          cp config/config.json ./config.json
 
       - name: Start Services
         run: |
           cd ~/openclaw-src
-          # 强制开启非交互模式启动网关
+          # 启动浏览器
+          google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
+          
+          # 强制开启非交互模式 + CI模式，直接运行
           export OPENCLAW_NONINTERACTIVE=true
-          node openclaw.mjs gateway > openclaw.log 2>&1 &
+          export CI=true
+          # 使用官方 start 指令但通过环境变量绕过交互
+          pnpm start > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
-          MAX_RETRIES=40
+          MAX_RETRIES=60
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:3002 > /dev/null; then
               echo "OpenClaw Gateway is up and running!"
+              # 设置标记供下一步使用
+              echo "SERVICE_READY=true" >> $GITHUB_ENV
               break
             fi
             echo "Waiting for Gateway response... ($((COUNT+1))/$MAX_RETRIES)"
             sleep 5
             COUNT=$((COUNT+1))
           done
+          
+          if ! curl -s http://localhost:3002 > /dev/null; then
+            echo "ERROR: OpenClaw failed to start. Logs:"
+            cat openclaw.log
+          fi
           
           if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
             cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
@@ -108,7 +110,7 @@ jobs:
           fi
 
       - name: Notify Deployment
-        if: env.URL_DETECTED != ''
+        # 即使 SERVICE_READY 为空也尝试通知，方便查错
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
@@ -121,6 +123,10 @@ jobs:
           python3 - <<EOF
           import os, requests, json
           url = os.environ.get('TUNNEL_URL')
+          if not url:
+              print("No tunnel URL found, skipping notification.")
+              exit(0)
+          
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 中转测试部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
