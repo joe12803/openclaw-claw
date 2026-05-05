@@ -33,25 +33,22 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Manual Installation (The Reliable Way)
+      - name: Manual Installation
         run: |
           git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src
           cd ~/openclaw-src
           npm install -g pnpm
           pnpm install
           pnpm build
-          # 强制创建全局软链接，确保命令一定存在
-          sudo ln -s $(pwd)/openclaw.mjs /usr/local/bin/openclaw
-          chmod +x openclaw.mjs /usr/local/bin/openclaw
 
-      - name: Configure OpenClaw
+      - name: Configure OpenClaw (Multiple Locations)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          mkdir -p ~/.openclaw/config
-          cat <<EOF > ~/.openclaw/config.json
+          # 创建配置内容
+          cat <<EOF > config_template.json
           {
             "server": { "port": 3002, "host": "0.0.0.0" },
             "gateway": {
@@ -73,6 +70,15 @@ jobs:
             ]
           }
           EOF
+          
+          # 将配置分发到所有可能的位置
+          mkdir -p ~/.openclaw/config
+          mkdir -p ~/openclaw-src/config
+          cp config_template.json ~/.openclaw/config.json
+          cp config_template.json ~/.openclaw/config/config.json
+          cp config_template.json ~/openclaw-src/config.json
+          cp config_template.json ~/openclaw-src/openclaw.json
+          cp config_template.json ~/openclaw-src/config/config.json
 
       - name: Start OpenClaw
         run: |
@@ -80,9 +86,10 @@ jobs:
           export CI=true
           sudo apt-get install -y expect
           
-          # 直接使用编译好的源码路径启动，确保 100% 找得到
           cd ~/openclaw-src
-          unbuffer ./openclaw.mjs gateway --verbose > openclaw.log 2>&1 &
+          # 关键修复：添加 --allow-unconfigured 标志作为兜底，
+          # 并确保在源码目录下运行以读取本地 config/ 目录
+          unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
           MAX_RETRIES=60
@@ -125,7 +132,7 @@ jobs:
           import os, requests, json
           url = "$TUNNEL_URL"
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
-          msg = f"🚀 OpenClaw (Manual Build) 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
+          msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
           if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
               requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
