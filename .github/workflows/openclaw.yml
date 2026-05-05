@@ -33,11 +33,16 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install via Official Script
+      - name: Manual Installation (The Reliable Way)
         run: |
-          # 关键：使用 yes 强灌输入，忽略安装末尾的 TTY 错误
-          yes "" | curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script finished."
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src
+          cd ~/openclaw-src
+          npm install -g pnpm
+          pnpm install
+          pnpm build
+          # 强制创建全局软链接，确保命令一定存在
+          sudo ln -s $(pwd)/openclaw.mjs /usr/local/bin/openclaw
+          chmod +x openclaw.mjs /usr/local/bin/openclaw
 
       - name: Configure OpenClaw
         env:
@@ -75,11 +80,12 @@ jobs:
           export CI=true
           sudo apt-get install -y expect
           
-          # 核心修复：添加 --verbose 标志并使用 unbuffer 启动
-          unbuffer ~/.local/bin/openclaw gateway --verbose > openclaw.log 2>&1 &
+          # 直接使用编译好的源码路径启动，确保 100% 找得到
+          cd ~/openclaw-src
+          unbuffer ./openclaw.mjs gateway --verbose > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
-          MAX_RETRIES=40
+          MAX_RETRIES=60
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:3002 > /dev/null; then
@@ -119,7 +125,7 @@ jobs:
           import os, requests, json
           url = "$TUNNEL_URL"
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
-          msg = f"🚀 OpenClaw (Verbose) 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
+          msg = f"🚀 OpenClaw (Manual Build) 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
           if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
               requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
