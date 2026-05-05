@@ -41,7 +41,7 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Configure OpenClaw (Full Linkage)
+      - name: Configure OpenClaw (Fix CORS & Allowed Origins)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
@@ -53,12 +53,15 @@ jobs:
           cd ~/openclaw-src
           mkdir -p config
           
-          # 创建一站式配置：API + WebUI + Bots
           cat <<EOF > config/config.json
           {
             "server": { "port": 18789, "host": "0.0.0.0" },
             "gateway": {
-              "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" }
+              "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" },
+              "controlUi": {
+                "enabled": true,
+                "allowedOrigins": ["*"]
+              }
             },
             "providers": [
               {
@@ -76,17 +79,8 @@ jobs:
             ],
             "adapters": {
               "webui": { "enabled": true, "config": { "port": 18789 } },
-              "telegram": {
-                "enabled": true,
-                "config": { "token": "${TELEGRAM_BOT_TOKEN}" }
-              },
-              "feishu": {
-                "enabled": true,
-                "config": {
-                  "appId": "${FEISHU_APP_ID}",
-                  "appSecret": "${FEISHU_APP_SECRET}"
-                }
-              }
+              "telegram": { "enabled": true, "config": { "token": "${TELEGRAM_BOT_TOKEN}" } },
+              "feishu": { "enabled": true, "config": { "appId": "${FEISHU_APP_ID}", "appSecret": "${FEISHU_APP_SECRET}" } }
             },
             "agents": {
               "main": { "model": "relay-api/gemini-3-flash" }
@@ -151,8 +145,25 @@ jobs:
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 部署成功！\n🔗 WebUI/API: {url}\n🔑 Token: {token}\n🤖 默认模型: gemini-3-flash"
           
-          # 通知代码 (保持一致)
-          # ... (已注入完整通知逻辑)
+          # Telegram
+          tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+          tg_id = os.environ.get('TELEGRAM_CHAT_ID')
+          if tg_token and tg_id:
+              requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
+          
+          # Feishu
+          fs_id = os.environ.get('FEISHU_APP_ID')
+          fs_secret = os.environ.get('FEISHU_APP_SECRET')
+          fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
+          if fs_id and fs_secret and fs_chat_id:
+              id_type = "chat_id" if fs_chat_id.startswith("oc_") else "open_id"
+              token_res = requests.post("https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal", json={"app_id": fs_id, "app_secret": fs_secret}).json()
+              app_token = token_res.get('app_access_token')
+              if app_token:
+                  send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={id_type}"
+                  headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
+                  payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
+                  requests.post(send_url, headers=headers, json=payload)
           EOF
 
       - name: Keep Alive
