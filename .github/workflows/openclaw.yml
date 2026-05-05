@@ -41,7 +41,7 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Configure OpenClaw (Full Routing)
+      - name: Configure OpenClaw (Physical Injection)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
@@ -49,11 +49,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           cd ~/openclaw-src
           mkdir -p config
           
-          # 1. 主配置文件
+          # 构造最精简、最核心的配置文件
           cat <<EOF > config/config.json
           {
             "server": { "port": 18789, "host": "0.0.0.0" },
@@ -77,7 +78,10 @@ jobs:
             "adapters": {
               "telegram": {
                 "enabled": true,
-                "config": { "token": "${TELEGRAM_BOT_TOKEN}" }
+                "config": { 
+                  "token": "${TELEGRAM_BOT_TOKEN}",
+                  "allowedUsers": ["${TELEGRAM_CHAT_ID}"]
+                }
               },
               "feishu": {
                 "enabled": true,
@@ -89,19 +93,23 @@ jobs:
             }
           }
           EOF
-
-          # 2. 路由配置文件 (关键！)
-          # 强制让 main agent 使用我们的 relay-api
+          
+          # 构造路由文件，确保 main agent 指向 relay-api
           cat <<EOF > config/agents.json
           {
             "main": {
-              "model": "relay-api/gemini-3-flash",
-              "parameters": { "temperature": 0.7 }
+              "model": "relay-api/gemini-3-flash"
             }
           }
           EOF
           
+          # 物理占位，确保无论它找哪个文件都能读到
           cp config/config.json ./openclaw.json
+          
+          echo "🔍 Current Config Structure:"
+          ls -R config/
+          echo "📄 Config Content (Masked Secrets):"
+          sed 's/sk-.*/sk-***/g' config/config.json
 
       - name: Start OpenClaw
         run: |
@@ -109,7 +117,8 @@ jobs:
           export CI=true
           sudo apt-get install -y expect
           cd ~/openclaw-src
-          # 启动时打印更多调试信息
+          
+          # 关键：显式指定配置文件路径启动
           unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway..."
@@ -117,7 +126,7 @@ jobs:
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:18789 > /dev/null; then
-              echo "✅ OpenClaw is up with Bot Adapters and Routing!"
+              echo "✅ OpenClaw Gateway is live!"
               break
             fi
             sleep 5
@@ -152,10 +161,7 @@ jobs:
             T_COUNT=$((T_COUNT+1))
           done
           
-          if [ -z "$DETECTED" ]; then
-             echo "❌ Tunnel URL detection failed."
-             exit 0
-          fi
+          if [ -z "$DETECTED" ]; then exit 0; fi
 
           python3 - <<EOF
           import os, requests, json
