@@ -64,26 +64,51 @@ jobs:
         run: |
           cd ~/openclaw-src
           google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
+          
+          # 启动服务，并记录详细日志
           pnpm start > openclaw.log 2>&1 &
           
-          echo "Waiting for OpenClaw to start on port 3002..."
-          MAX_RETRIES=30
+          echo "Waiting for OpenClaw HTTP service to respond on port 3002..."
+          MAX_RETRIES=40
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
-            if nc -z localhost 3002; then
-              echo "OpenClaw is up!"
+            # 使用 curl 检查 HTTP 响应（忽略具体状态码，只要能连上就行）
+            if curl -s http://localhost:3002 > /dev/null; then
+              echo "OpenClaw HTTP service is responding!"
               break
             fi
+            echo "Waiting for HTTP response... ($((COUNT+1))/$MAX_RETRIES)"
             sleep 5
             COUNT=$((COUNT+1))
           done
           
+          if ! curl -s http://localhost:3002 > /dev/null; then
+            echo "ERROR: OpenClaw failed to respond within timeout."
+            tail -n 100 openclaw.log
+            exit 1
+          fi
+          
           if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
             cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
-            sleep 15
-            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
-            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
-            echo "URL_DETECTED=$TUNNEL_URL"
+            
+            # 等待隧道生成 URL
+            TUNNEL_URL=""
+            T_RETRIES=10
+            T_COUNT=0
+            while [ $T_COUNT -lt $T_RETRIES ]; do
+              TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
+              if [ -n "$TUNNEL_URL" ]; then break; fi
+              sleep 3
+              T_COUNT=$((T_COUNT+1))
+            done
+            
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+              echo "URL_DETECTED=$TUNNEL_URL"
+            else
+              echo "Failed to detect Tunnel URL"
+              cat tunnel.log
+            fi
           fi
 
       - name: Notify Deployment
@@ -99,7 +124,6 @@ jobs:
         run: |
           python3 - <<EOF
           import os, requests, json
-          
           url = os.environ.get('TUNNEL_URL')
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n⏳ 持续时间: 6小时"
@@ -108,30 +132,21 @@ jobs:
           tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
           tg_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
           if tg_token and tg_chat_id:
-              try:
-                  requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", 
-                                json={"chat_id": tg_chat_id, "text": msg}, timeout=10)
-                  print("Telegram notification sent.")
-              except Exception as e:
-                  print(f"Telegram failed: {e}")
+              requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_chat_id, "text": msg}, timeout=10)
           
           # Feishu
           fs_id = os.environ.get('FEISHU_APP_ID')
           fs_secret = os.environ.get('FEISHU_APP_SECRET')
           fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
           if fs_id and fs_secret and fs_chat_id:
-              try:
-                  token_url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
-                  token_res = requests.post(token_url, json={"app_id": fs_id, "app_secret": fs_secret}, timeout=10).json()
-                  app_token = token_res.get('app_access_token')
-                  if app_token:
-                      send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
-                      headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
-                      payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
-                      requests.post(send_url, headers=headers, json=payload, timeout=10)
-                      print("Feishu notification sent.")
-              except Exception as e:
-                  print(f"Feishu failed: {e}")
+              token_url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+              token_res = requests.post(token_url, json={"app_id": fs_id, "app_secret": fs_secret}, timeout=10).json()
+              app_token = token_res.get('app_access_token')
+              if app_token:
+                  send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+                  headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
+                  payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
+                  requests.post(send_url, headers=headers, json=payload, timeout=10)
           EOF
 
       - name: Keep Alive
