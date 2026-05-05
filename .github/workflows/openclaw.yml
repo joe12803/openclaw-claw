@@ -41,7 +41,7 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Restore and Inject Configuration
+      - name: Configure OpenClaw (Full Routing)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
@@ -49,57 +49,59 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # 1. 创建基础目录
-          mkdir -p ~/.openclaw/config
+          cd ~/openclaw-src
+          mkdir -p config
           
-          # 2. 从仓库复刻你手动跑通的配置
-          if [ -d ".openclaw-data/config" ]; then
-            cp -r .openclaw-data/config/* ~/.openclaw/config/
-            echo "✅ Config restored from repository."
-          fi
-          
-          # 3. 强制注入当前 Secrets (防止仓库里的配置过期)
-          # 使用 Python 脚本精确修改 JSON
-          python3 - <<EOF
-          import json, os
-          path = os.path.expanduser('~/.openclaw/config/config.json')
-          if not os.path.exists(path):
-              # 如果不存在，则创建一个基础模板
-              config = {"server":{"port":18789},"gateway":{"auth":{"enabled":True}}}
-          else:
-              with open(path, 'r') as f: config = json.load(f)
-          
-          # 强制更新核心字段
-          config['gateway']['auth']['token'] = os.environ.get('GATEWAY_TOKEN') or config['gateway']['auth'].get('token') or 'openclaw-secret'
-          
-          # 更新 Providers
-          if 'providers' not in config: config['providers'] = []
-          relay_p = next((p for p in config['providers'] if p.get('id') == 'relay-api'), None)
-          if not relay_p:
-              relay_p = {"id": "relay-api", "type": "openai", "enabled": True, "config": {}, "models": [{"id":"gemini-3-flash","name":"Gemini 3 Flash","default":True}]}
-              config['providers'].append(relay_p)
-          
-          relay_p['config']['apiKey'] = os.environ.get('RELAY_API_KEY')
-          relay_p['config']['baseUrl'] = os.environ.get('RELAY_API_BASE')
-          
-          # 更新 Adapters
-          if 'adapters' not in config: config['adapters'] = {}
-          if 'telegram' not in config['adapters']: config['adapters']['telegram'] = {"enabled": True, "config": {}}
-          config['adapters']['telegram']['config']['token'] = os.environ.get('TELEGRAM_BOT_TOKEN')
-          config['adapters']['telegram']['config']['allowedUsers'] = [os.environ.get('TELEGRAM_CHAT_ID')]
-          
-          if 'feishu' not in config['adapters']: config['adapters']['feishu'] = {"enabled": True, "config": {}}
-          config['adapters']['feishu']['config']['appId'] = os.environ.get('FEISHU_APP_ID')
-          config['adapters']['feishu']['config']['appSecret'] = os.environ.get('FEISHU_APP_SECRET')
-          
-          with open(path, 'w') as f: json.dump(config, f, indent=2)
-          print("✅ Configuration injected with latest secrets.")
+          # 1. 主配置文件
+          cat <<EOF > config/config.json
+          {
+            "server": { "port": 18789, "host": "0.0.0.0" },
+            "gateway": {
+              "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" }
+            },
+            "providers": [
+              {
+                "id": "relay-api",
+                "type": "openai",
+                "enabled": true,
+                "config": {
+                  "apiKey": "${RELAY_API_KEY}",
+                  "baseUrl": "${RELAY_API_BASE}"
+                },
+                "models": [
+                  { "id": "gemini-3-flash", "name": "Gemini 3 Flash", "default": true }
+                ]
+              }
+            ],
+            "adapters": {
+              "telegram": {
+                "enabled": true,
+                "config": { "token": "${TELEGRAM_BOT_TOKEN}" }
+              },
+              "feishu": {
+                "enabled": true,
+                "config": {
+                  "appId": "${FEISHU_APP_ID}",
+                  "appSecret": "${FEISHU_APP_SECRET}"
+                }
+              }
+            }
+          }
+          EOF
+
+          # 2. 路由配置文件 (关键！)
+          # 强制让 main agent 使用我们的 relay-api
+          cat <<EOF > config/agents.json
+          {
+            "main": {
+              "model": "relay-api/gemini-3-flash",
+              "parameters": { "temperature": 0.7 }
+            }
+          }
           EOF
           
-          # 保持源码目录同步
-          cp ~/.openclaw/config/config.json ~/openclaw-src/openclaw.json
+          cp config/config.json ./openclaw.json
 
       - name: Start OpenClaw
         run: |
@@ -107,6 +109,7 @@ jobs:
           export CI=true
           sudo apt-get install -y expect
           cd ~/openclaw-src
+          # 启动时打印更多调试信息
           unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway..."
@@ -114,7 +117,7 @@ jobs:
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:18789 > /dev/null; then
-              echo "✅ OpenClaw is up and aligned with your manual setup!"
+              echo "✅ OpenClaw is up with Bot Adapters and Routing!"
               break
             fi
             sleep 5
@@ -150,8 +153,8 @@ jobs:
           done
           
           if [ -z "$DETECTED" ]; then
-            echo "❌ Tunnel detection failed."
-            exit 0
+             echo "❌ Tunnel URL detection failed."
+             exit 0
           fi
 
           python3 - <<EOF
