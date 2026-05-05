@@ -1,21 +1,24 @@
-# OpenClaw-Claw: 跨平台 API 桥接 + 长期记忆同步
+# OpenClaw Claw: 云端零成本 API 转发器
 
-本项目是一个高度自动化的 API 代理与智能体管理中心。它利用 GitHub Actions 部署 **OpenClaw**，将各类非标准模型（如 Gemini Web、Claude Web）转换为标准 OpenAI 接口，并支持跨 Agent 的长期记忆共享。
+本项目参考了 `hermes-claw` 的设计，旨在通过 GitHub Actions 部署一个临时的、全功能的 **OpenClaw (Zero Token)** 服务。
 
 ## 核心功能
+1.  **自动部署**：使用 GitHub Actions 免费算力运行 OpenClaw。
+2.  **隧道穿透**：集成 Cloudflare Tunnel，自动生成公共 API 地址。
+3.  **Codespaces 兼容**：内置 Dev Container，支持在浏览器中调试 OpenClaw 源码。
 
-1.  **OpenClaw 部署**: 自动在 GitHub Actions 云端运行 OpenClaw，提供稳定的 OpenAI 兼容接口。
-2.  **长期记忆共享**: 与 `hermes-claw` 结构对齐，所有配置和会话自动备份至 `.openclaw-data/`。
-3.  **Copilot 协同**: 内置 `AGENTS.md` 和 `.cursorrules`，让 Copilot 能够理解 OpenClaw 的路由逻辑。
-4.  **云端工作站**: 支持一键启动 Codespaces 进行 API 测试和功能开发。
+## 快速开始
 
-## 配置要求 (Secrets)
+### 1. 配置 Secrets
+在 GitHub 仓库中设置以下 Secrets：
+- `GATEWAY_TOKEN`: (必填) 用于访问 API 的鉴权令牌。
+- `CLAUDE_SESSION_KEY`: (选填) 用于自动注入 Claude 会话。
 
-请在 GitHub 仓库设置以下密钥：
-- `GEMINI_COOKIE`: Gemini Web 版 Cookie。
-- `CLAUDE_COOKIE`: Claude Web 版 Cookie。
-- `OPENCLAW_AUTH_TOKEN`: 你自定义的 API 访问令牌（默认建议设为 `sk-123456`）。
+### 2. 启动服务
+1.  进入 **Actions** 页面。
+2.  选择 **OpenClaw Runner**。
+3.  点击 **Run workflow**。
+4.  稍等片刻，在日志中查找生成的 `*.trycloudflare.com` 地址。
 
-## 自动同步
-
-系统每 10 分钟自动将配置变更和日志推送到本仓库。
+## 配合 Hermes 使用
+将生成的 URL 填入 `hermes-claw` 的 `api_base` 参数中，即可实现全链路云端 AI 工作流。

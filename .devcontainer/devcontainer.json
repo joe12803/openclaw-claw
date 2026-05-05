@@ -1,17 +1,17 @@
 {
-    "name": "OpenClaw Development",
-    "image": "mcr.microsoft.com/devcontainers/python:3.10",
-    "features": {
-        "ghcr.io/devcontainers/features/github-cli:1": {}
-    },
-    "customizations": {
-        "vscode": {
-            "extensions": [
-                "GitHub.copilot",
-                "GitHub.copilot-chat"
-            ]
-        }
-    },
-    "postCreateCommand": "pip install -r requirements.txt",
-    "remoteUser": "vscode"
+  "name": "OpenClaw Development Environment",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  },
+  "postCreateCommand": "npm install -g pnpm && git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git openclaw-src && cd openclaw-src && pnpm install"
 }

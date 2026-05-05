@@ -1,17 +1,19 @@
-name: OpenClaw Actions Runner
+name: OpenClaw Runner
 on:
   workflow_dispatch:
     inputs:
-      run_bridge:
-        description: 'Start OpenClaw API Bridge'
+      run_openclaw:
+        description: 'Start OpenClaw Service'
+        type: boolean
+        default: true
+      use_tunnel:
+        description: 'Expose via Cloudflare Tunnel'
         type: boolean
         default: true
 
 jobs:
-  run-openclaw:
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,87 +23,62 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install OpenClaw (Official)
+      - name: Install Dependencies
         run: |
-          git clone --depth 1 https://github.com/OpenClaw/OpenClaw ~/openclaw
-          cd ~/openclaw
-          npm install
+          # 克隆 OpenClaw Zero Token 源码
+          git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src
+          cd ~/openclaw-src
+          npm install -g pnpm
+          pnpm install
+          pnpm build
 
-      - name: Restore Data
+      - name: Install Chrome and Cloudflared
         run: |
-          mkdir -p ~/.openclaw
-          if [ -d ".openclaw-data" ]; then
-            cp -r .openclaw-data/* ~/.openclaw/ || true
-          fi
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
       - name: Configure OpenClaw
         env:
-          GEMINI_COOKIE: ${{ secrets.GEMINI_COOKIE }}
-          CLAUDE_COOKIE: ${{ secrets.CLAUDE_COOKIE }}
-          AUTH_TOKEN: ${{ secrets.OPENCLAW_AUTH_TOKEN || 'sk-123456' }}
+          CLAUDE_SESSION_KEY: ${{ secrets.CLAUDE_SESSION_KEY }}
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          # Official OpenClaw uses .env and config.json
-          mkdir -p ~/openclaw/config
-          cat <<EOF > ~/openclaw/config/config.json
+          cd ~/openclaw-src
+          # 生成基础配置
+          cat <<EOF > openclaw.json
           {
-            "providers": {
-              "gemini": {
-                "cookie": "${GEMINI_COOKIE}"
-              },
-              "claude": {
-                "cookie": "${CLAUDE_COOKIE}"
-              }
+            "server": {
+              "port": 3002,
+              "host": "0.0.0.0"
             },
-            "auth": {
-              "token": "${AUTH_TOKEN}"
+            "gateway": {
+              "auth": {
+                "enabled": true,
+                "token": "${GATEWAY_TOKEN:-openclaw-secret}"
+              }
             }
           }
           EOF
 
-      - name: Start Background Auto-Sync
+      - name: Start Services
         run: |
-          cat <<'EOF' > sync.sh
-          while true; do
-            sleep 600
-            mkdir -p .openclaw-data
-            cp -r ~/openclaw/config .openclaw-data/ || true
-            cp -r ~/openclaw/logs .openclaw-data/ || true
-            git config --global user.name "openclaw-bot"
-            git config --global user.email "openclaw-bot@users.noreply.github.com"
-            git add .openclaw-data
-            if ! git diff --cached --quiet; then
-              git commit -m "chore: auto-sync openclaw state [skip ci]"
-              git push origin main || echo "Push failed"
-            fi
-          done
-          EOF
-          chmod +x sync.sh
-          ./sync.sh &
-
-      - name: Start OpenClaw and Tunnel
-        run: |
-          # Install Cloudflared
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
+          cd ~/openclaw-src
           
-          # Start OpenClaw
-          cd ~/openclaw
-          npm start &
+          # 1. 启动 Headless Chrome (用于 Cookie 注入/捕获)
+          google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox &
           
-          # Start Tunnel
-          cloudflared tunnel --url http://localhost:8001 &
+          # 2. 启动 OpenClaw
+          pnpm start &
           
-          echo "Official OpenClaw (Node.js) is running."
+          # 3. 启动 Cloudflare Tunnel
+          if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
+            cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
+            sleep 15
+            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
+            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+            echo "OpenClaw API is live at: $TUNNEL_URL"
+          fi
+          
+          # 保持运行 (Actions 限制 6 小时)
           sleep 21600
-
-      - name: Final Data Sync
-        if: always()
-        run: |
-          mkdir -p .openclaw-data
-          cp -r ~/openclaw/config .openclaw-data/ || true
-          cp -r ~/openclaw/logs .openclaw-data/ || true
-          git config --global user.name "openclaw-bot"
-          git config --global user.email "openclaw-bot@users.noreply.github.com"
-          git add .openclaw-data
-          git commit -m "docs: final state sync" || echo "No changes"
-          git push origin main
