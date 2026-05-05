@@ -35,7 +35,8 @@ jobs:
 
       - name: Install via Official Script
         run: |
-          yes "" | curl -fsSL https://openclaw.ai/install.sh | bash || echo "Installation finished with expected TTY warning."
+          # 关键：使用 yes 强灌输入，忽略安装末尾的 TTY 错误
+          yes "" | curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script finished."
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Configure OpenClaw
@@ -73,7 +74,9 @@ jobs:
           export OPENCLAW_NONINTERACTIVE=true
           export CI=true
           sudo apt-get install -y expect
-          unbuffer openclaw gateway > openclaw.log 2>&1 &
+          
+          # 核心修复：添加 --verbose 标志并使用 unbuffer 启动
+          unbuffer ~/.local/bin/openclaw gateway --verbose > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
           MAX_RETRIES=40
@@ -87,6 +90,12 @@ jobs:
             sleep 5
             COUNT=$((COUNT+1))
           done
+          
+          if ! curl -s http://localhost:3002 > /dev/null; then
+            echo "ERROR: OpenClaw Gateway failed to start. Last logs:"
+            cat openclaw.log
+            exit 1
+          fi
 
       - name: Start Tunnel & Notify
         if: always()
@@ -110,7 +119,7 @@ jobs:
           import os, requests, json
           url = "$TUNNEL_URL"
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
-          msg = f"🚀 OpenClaw 官方脚本部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
+          msg = f"🚀 OpenClaw (Verbose) 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
           if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
               requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
