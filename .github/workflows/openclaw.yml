@@ -31,10 +31,11 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Install Chrome, Cloudflared and Python Deps
+      - name: Install PTY tools, Chrome, Cloudflared
         run: |
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          # 安装 expect 包含 unbuffer, 也可以用 bsdutils 的 script
+          sudo apt-get install -y google-chrome-stable expect
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           pip install requests
@@ -65,14 +66,12 @@ jobs:
           cd ~/openclaw-src
           google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
           
-          # 使用官方入口脚本，并强制开启非交互模式
-          # OPENCLAW_NONINTERACTIVE=true 是绕过 Crestodian TTY 检查的关键
-          export OPENCLAW_NONINTERACTIVE=true
-          export CI=true
-          node openclaw.mjs > openclaw.log 2>&1 &
+          # 终极修复：使用 unbuffer (from expect) 创建伪终端环境
+          # 这会让 OpenClaw 认为自己运行在交互式终端中
+          unbuffer node openclaw.mjs > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw HTTP service to respond on port 3002..."
-          MAX_RETRIES=40
+          MAX_RETRIES=60
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:3002 > /dev/null; then
@@ -87,17 +86,12 @@ jobs:
           if ! curl -s http://localhost:3002 > /dev/null; then
             echo "ERROR: OpenClaw failed to respond within timeout."
             echo "--- OpenClaw Logs ---"
-            tail -n 100 openclaw.log
+            cat openclaw.log
             exit 1
           fi
           
           if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
-            cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
-            # 注意：OpenClaw 默认后台端口可能是 8080 或 3002，我们在配置中锁定了 3002
-            # 重新修正隧道指向
-            pkill -f cloudflared || true
             cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
-            
             sleep 15
             TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
             echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
