@@ -25,7 +25,6 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # 克隆 OpenClaw Zero Token 源码
           git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src
           cd ~/openclaw-src
           npm install -g pnpm
@@ -45,7 +44,7 @@ jobs:
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
           cd ~/openclaw-src
-          # 生成基础配置
+          # 强制指定 3002 端口，确保与 Tunnel 对应
           cat <<EOF > openclaw.json
           {
             "server": {
@@ -65,18 +64,40 @@ jobs:
         run: |
           cd ~/openclaw-src
           
-          # 1. 启动 Headless Chrome (用于 Cookie 注入/捕获)
-          google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox &
+          # 1. 启动 Headless Chrome
+          google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
           
-          # 2. 启动 OpenClaw
-          pnpm start &
+          # 2. 启动 OpenClaw 并输出日志以便调试
+          pnpm start > openclaw.log 2>&1 &
           
-          # 3. 启动 Cloudflare Tunnel
+          # 3. 等待服务就绪 (检查 3002 端口)
+          echo "Waiting for OpenClaw to start on port 3002..."
+          MAX_RETRIES=30
+          COUNT=0
+          while [ $COUNT -lt $MAX_RETRIES ]; do
+            if nc -z localhost 3002; then
+              echo "OpenClaw is up!"
+              break
+            fi
+            echo "Still waiting... ($((COUNT+1))/$MAX_RETRIES)"
+            sleep 5
+            COUNT=$((COUNT+1))
+          done
+          
+          # 4. 如果端口没起来，打印日志报错
+          if ! nc -z localhost 3002; then
+            echo "ERROR: OpenClaw failed to start within 150 seconds."
+            echo "--- OpenClaw Logs ---"
+            tail -n 50 openclaw.log
+            exit 1
+          fi
+          
+          # 5. 启动 Cloudflare Tunnel
           if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
             cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
             sleep 15
             TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
-            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+            echo "TUNNEL_URL=$TUNNEL_URL"
             echo "OpenClaw API is live at: $TUNNEL_URL"
           fi
           
