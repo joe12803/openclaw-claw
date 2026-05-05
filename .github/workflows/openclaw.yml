@@ -34,7 +34,6 @@ jobs:
       - name: Install PTY tools, Chrome, Cloudflared
         run: |
           sudo apt-get update
-          # 安装 expect 包含 unbuffer, 也可以用 bsdutils 的 script
           sudo apt-get install -y google-chrome-stable expect
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
@@ -66,9 +65,8 @@ jobs:
           cd ~/openclaw-src
           google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
           
-          # 终极修复：使用 unbuffer (from expect) 创建伪终端环境
-          # 这会让 OpenClaw 认为自己运行在交互式终端中
-          unbuffer node openclaw.mjs > openclaw.log 2>&1 &
+          # 策略更新：模拟回车输入以通过 Crestodian 的欢迎界面
+          echo -e "\n" | unbuffer node openclaw.mjs > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw HTTP service to respond on port 3002..."
           MAX_RETRIES=60
