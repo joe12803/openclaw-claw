@@ -27,9 +27,10 @@ jobs:
 
       - name: Install via Official Script
         run: |
-          # 官方一键安装脚本
-          curl -fsSL https://openclaw.ai/install.sh | bash
-          # 脚本通常会将 openclaw 命令加入路径，或者安装到 ~/.local/bin/openclaw
+          # 使用 yes 命令强行喂给安装脚本回车，并忽略最后的交互式 TTY 报错
+          yes "" | curl -fsSL https://openclaw.ai/install.sh | bash || echo "Installation finished with expected TTY warning."
+          # 确保 bin 目录在 PATH 中
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Configure OpenClaw
         env:
@@ -37,10 +38,8 @@ jobs:
           RELAY_API_BASE: "https://openclaw.994938.xyz/v1"
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          # 官方安装通常会在 ~/.openclaw 创建配置目录
           mkdir -p ~/.openclaw/config
-          
-          # 创建统一配置文件
+          # 创建统一配置文件，跳过引导
           cat <<EOF > ~/.openclaw/config.json
           {
             "server": { "port": 3002, "host": "0.0.0.0" },
@@ -63,20 +62,15 @@ jobs:
             ]
           }
           EOF
-          # 同时在各个可能的位置备份一份
-          cp ~/.openclaw/config.json ~/.openclaw/openclaw.json
 
       - name: Start OpenClaw
         run: |
-          # 使用官方 CLI 启动网关模式，并强制非交互
+          # 关键：设置环境变量并直接启动 Gateway，不跑 setup
           export OPENCLAW_NONINTERACTIVE=true
           export CI=true
-          # 尝试多种可能的命令路径
-          if command -v openclaw &> /dev/null; then
-            openclaw gateway > openclaw.log 2>&1 &
-          else
-            ~/.local/bin/openclaw gateway > openclaw.log 2>&1 &
-          fi
+          # 使用 unbuffer 再次保险，并后台运行
+          sudo apt-get install -y expect
+          unbuffer openclaw gateway > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
           MAX_RETRIES=40
@@ -101,7 +95,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          # 安装 cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
@@ -116,15 +109,17 @@ jobs:
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 官方脚本部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
-          # Telegram 推送
-          requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
+          # Telegram
+          if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
+              requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
           
-          # Feishu 推送
-          fs_id = os.environ['FEISHU_APP_ID']
-          fs_secret = os.environ['FEISHU_APP_SECRET']
-          token_res = requests.post("https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal", json={"app_id": fs_id, "app_secret": fs_secret}).json()
-          headers = {"Authorization": f"Bearer {token_res['app_access_token']}", "Content-Type": "application/json"}
-          requests.post("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", headers=headers, json={"receive_id": os.environ['FEISHU_CHAT_ID'], "msg_type": "text", "content": json.dumps({"text": msg})})
+          # Feishu
+          if os.environ.get('FEISHU_APP_ID') and os.environ.get('FEISHU_APP_SECRET'):
+              fs_id = os.environ['FEISHU_APP_ID']
+              fs_secret = os.environ['FEISHU_APP_SECRET']
+              token_res = requests.post("https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal", json={"app_id": fs_id, "app_secret": fs_secret}).json()
+              headers = {"Authorization": f"Bearer {token_res['app_access_token']}", "Content-Type": "application/json"}
+              requests.post("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", headers=headers, json={"receive_id": os.environ['FEISHU_CHAT_ID'], "msg_type": "text", "content": json.dumps({"text": msg})})
           EOF
           else
             echo "Failed to generate Tunnel URL"
