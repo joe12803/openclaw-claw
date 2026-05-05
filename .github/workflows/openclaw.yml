@@ -35,7 +35,7 @@ jobs:
 
       - name: Manual Installation
         run: |
-          git clone --depth 1 https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src
+          git clone https://github.com/OpenClaw/OpenClaw.git ~/openclaw-src && cd ~/openclaw-src && git checkout 7dc6007a
           cd ~/openclaw-src
           npm install -g pnpm
           pnpm install
