@@ -31,10 +31,10 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Install PTY tools, Chrome, Cloudflared
+      - name: Install Chrome, Cloudflared, and Python
         run: |
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable expect
+          sudo apt-get install -y google-chrome-stable
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           pip install requests
@@ -45,6 +45,7 @@ jobs:
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
           cd ~/openclaw-src
+          # 创建核心配置文件
           cat <<EOF > openclaw.json
           {
             "server": {
@@ -65,25 +66,25 @@ jobs:
           cd ~/openclaw-src
           google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
           
-          # 策略更新：模拟回车输入以通过 Crestodian 的欢迎界面
-          echo -e "\n" | unbuffer node openclaw.mjs > openclaw.log 2>&1 &
+          # 核心改动：直接运行网关模式，绕过 Crestodian 交互管理器
+          # 使用 node openclaw.mjs gateway 命令启动
+          node openclaw.mjs gateway > openclaw.log 2>&1 &
           
-          echo "Waiting for OpenClaw HTTP service to respond on port 3002..."
-          MAX_RETRIES=60
+          echo "Waiting for OpenClaw Gateway to respond on port 3002..."
+          MAX_RETRIES=40
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:3002 > /dev/null; then
-              echo "OpenClaw HTTP service is responding!"
+              echo "OpenClaw Gateway is up and running!"
               break
             fi
-            echo "Waiting for HTTP response... ($((COUNT+1))/$MAX_RETRIES)"
+            echo "Waiting for Gateway response... ($((COUNT+1))/$MAX_RETRIES)"
             sleep 5
             COUNT=$((COUNT+1))
           done
           
           if ! curl -s http://localhost:3002 > /dev/null; then
-            echo "ERROR: OpenClaw failed to respond within timeout."
-            echo "--- OpenClaw Logs ---"
+            echo "ERROR: OpenClaw Gateway failed to start."
             cat openclaw.log
             exit 1
           fi
