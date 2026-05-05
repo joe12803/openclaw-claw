@@ -65,11 +65,11 @@ jobs:
           cd ~/openclaw-src
           google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
           
-          # 修复核心：跳过脚本，直接使用 node 运行编译后的后端代码
-          # 同时设置环境变量以强制进入非交互模式
-          export DEBIAN_FRONTEND=noninteractive
+          # 使用官方入口脚本，并强制开启非交互模式
+          # OPENCLAW_NONINTERACTIVE=true 是绕过 Crestodian TTY 检查的关键
+          export OPENCLAW_NONINTERACTIVE=true
           export CI=true
-          node dist/index.js > openclaw.log 2>&1 &
+          node openclaw.mjs > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw HTTP service to respond on port 3002..."
           MAX_RETRIES=40
@@ -92,7 +92,12 @@ jobs:
           fi
           
           if [ "${{ github.event.inputs.use_tunnel }}" == "true" ]; then
+            cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+            # 注意：OpenClaw 默认后台端口可能是 8080 或 3002，我们在配置中锁定了 3002
+            # 重新修正隧道指向
+            pkill -f cloudflared || true
             cloudflared tunnel --url http://localhost:3002 > tunnel.log 2>&1 &
+            
             sleep 15
             TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
             echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
