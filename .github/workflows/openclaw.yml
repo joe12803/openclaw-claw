@@ -47,7 +47,6 @@ jobs:
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          # 统一配置，使用 18789 默认端口以确保兼容性
           cat <<EOF > config_template.json
           {
             "server": { "port": 18789, "host": "0.0.0.0" },
@@ -82,32 +81,41 @@ jobs:
           export OPENCLAW_NONINTERACTIVE=true
           export CI=true
           sudo apt-get install -y expect
-          
           cd ~/openclaw-src
-          # 开启 Verbose 模式，锁定 18789 端口进行探测
           unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
           
-          echo "Waiting for OpenClaw Gateway to respond on port 18789..."
+          echo "Waiting for OpenClaw Gateway..."
           MAX_RETRIES=40
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:18789 > /dev/null; then
-              echo "OpenClaw Gateway is up and running!"
+              echo "✅ Gateway is up!"
               break
             fi
-            echo "Waiting for Gateway response... ($((COUNT+1))/$MAX_RETRIES)"
             sleep 5
             COUNT=$((COUNT+1))
           done
-          
-          if ! curl -s http://localhost:18789 > /dev/null; then
-            echo "ERROR: OpenClaw Gateway failed to start. Last logs:"
-            cat openclaw.log
-            exit 1
-          fi
 
-      - name: Start Tunnel & Notify
-        if: always()
+      - name: Start Tunnel
+        run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
+          
+          echo "Waiting for Cloudflare Tunnel URL (Max 60s)..."
+          T_COUNT=0
+          while [ $T_COUNT -lt 20 ]; do
+            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+              echo "Detected URL: $TUNNEL_URL"
+              break
+            fi
+            sleep 3
+            T_COUNT=$((T_COUNT+1))
+          done
+
+      - name: Notify Deployment
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
@@ -116,34 +124,40 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          
-          cloudflared tunnel --url http://localhost:18789 > tunnel.log 2>&1 &
-          sleep 15
-          TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
-          
-          if [ -n "$TUNNEL_URL" ]; then
-            python3 - <<EOF
+          python3 - <<EOF
           import os, requests, json
-          url = "$TUNNEL_URL"
+          url = os.environ.get('TUNNEL_URL')
+          if not url:
+              print("❌ Notification skipped: No Tunnel URL found.")
+              exit(0)
+          
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
-          if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'):
-              requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", json={"chat_id": os.environ['TELEGRAM_CHAT_ID'], "text": msg})
+          # Telegram
+          tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+          tg_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+          if tg_token and tg_chat_id:
+              print(f"Sending to Telegram {tg_chat_id}...")
+              r = requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_chat_id, "text": msg})
+              print(f"Result: {r.status_code}")
           
-          if os.environ.get('FEISHU_APP_ID') and os.environ.get('FEISHU_APP_SECRET'):
-              fs_id = os.environ['FEISHU_APP_ID']
-              fs_secret = os.environ['FEISHU_APP_SECRET']
-              token_res = requests.post("https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal", json={"app_id": fs_id, "app_secret": fs_secret}).json()
-              headers = {"Authorization": f"Bearer {token_res['app_access_token']}", "Content-Type": "application/json"}
-              requests.post("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", headers=headers, json={"receive_id": os.environ['FEISHU_CHAT_ID'], "msg_type": "text", "content": json.dumps({"text": msg})})
+          # Feishu
+          fs_id = os.environ.get('FEISHU_APP_ID')
+          fs_secret = os.environ.get('FEISHU_APP_SECRET')
+          fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
+          if fs_id and fs_secret and fs_chat_id:
+              print(f"Sending to Feishu {fs_chat_id}...")
+              token_url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+              token_res = requests.post(token_url, json={"app_id": fs_id, "app_secret": fs_secret}).json()
+              app_token = token_res.get('app_access_token')
+              if app_token:
+                  send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+                  headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
+                  payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
+                  r = requests.post(send_url, headers=headers, json=payload)
+                  print(f"Result: {r.status_code}")
           EOF
-          else
-            echo "Failed to generate Tunnel URL"
-            cat openclaw.log
-          fi
 
       - name: Keep Alive
         run: sleep 21600
