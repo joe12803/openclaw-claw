@@ -33,48 +33,57 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Restore Saved Config
+      - name: Configure OpenClaw with Relay API
+        env:
+          RELAY_API_KEY: "sk-KhbSk9pyLHkw8AzPy"
+          RELAY_API_BASE: "https://openclaw.994938.xyz/v1"
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
-          mkdir -p ~/openclaw-src/config
-          if [ -d ".openclaw-data/config" ]; then
-            cp -r .openclaw-data/config/* ~/openclaw-src/config/
-            echo "✅ Configuration restored from repository."
-          fi
-          if [ -f ".openclaw-data/openclaw.json" ]; then
-            cp .openclaw-data/openclaw.json ~/openclaw-src/
-            echo "✅ openclaw.json restored from repository."
-          fi
+          cd ~/openclaw-src
+          mkdir -p config
+          
+          # 创建主配置文件，锁定 3002 端口
+          cat <<EOF > openclaw.json
+          {
+            "server": { "port": 3002, "host": "0.0.0.0" },
+            "gateway": {
+              "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" }
+            }
+          }
+          EOF
 
-      - name: Install Chrome, Cloudflared
+          # 创建 Provider 配置 (中转 API)
+          cat <<EOF > config/providers.json
+          {
+            "providers": [
+              {
+                "id": "relay-gemini",
+                "type": "openai",
+                "enabled": true,
+                "config": {
+                  "apiKey": "${RELAY_API_KEY}",
+                  "baseUrl": "${RELAY_API_BASE}"
+                },
+                "models": [
+                  { "id": "gemini-3-flash", "name": "Gemini 3 Flash (Relay)" }
+                ]
+              }
+            ]
+          }
+          EOF
+          echo "✅ Configured relay API for initial testing."
+
+      - name: Install Cloudflared
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           pip install requests
 
-      - name: Start Services & Auto-Sync
+      - name: Start Services
         run: |
           cd ~/openclaw-src
-          google-chrome-stable --headless=new --remote-debugging-port=9222 --no-sandbox > chrome.log 2>&1 &
-          
-          # 启动后台同步脚本 (每10分钟同步一次配置回仓库)
-          cat <<'EOF' > sync.sh
-          while true; do
-            sleep 600
-            mkdir -p $GITHUB_WORKSPACE/.openclaw-data/config
-            cp -r /home/runner/openclaw-src/config/* $GITHUB_WORKSPACE/.openclaw-data/config/ 2>/dev/null || true
-            cp /home/runner/openclaw-src/openclaw.json $GITHUB_WORKSPACE/.openclaw-data/ 2>/dev/null || true
-            cd $GITHUB_WORKSPACE
-            git config user.name "OpenClaw-Bot"
-            git config user.email "bot@openclaw.local"
-            git add .openclaw-data/
-            git commit -m "chore: auto-sync openclaw configuration" && git push origin main || echo "No changes to sync"
-          done
-          EOF
-          bash sync.sh &
-          
-          # 启动网关
+          # 强制开启非交互模式启动网关
+          export OPENCLAW_NONINTERACTIVE=true
           node openclaw.mjs gateway > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway to respond on port 3002..."
@@ -106,24 +115,35 @@ jobs:
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
           TUNNEL_URL: ${{ env.URL_DETECTED }}
         run: |
           python3 - <<EOF
           import os, requests, json
           url = os.environ.get('TUNNEL_URL')
-          msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n⏳ 持续时间: 6小时\n💡 配置已自动从仓库加载。"
+          token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
+          msg = f"🚀 OpenClaw 中转测试部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
-          # Telegram / Feishu 通知逻辑 (省略部分重复代码)
+          # Telegram
+          tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+          tg_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+          if tg_token and tg_chat_id:
+              requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_chat_id, "text": msg})
+          
+          # Feishu
+          fs_id = os.environ.get('FEISHU_APP_ID')
+          fs_secret = os.environ.get('FEISHU_APP_SECRET')
+          fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
+          if fs_id and fs_secret and fs_chat_id:
+              token_url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+              token_res = requests.post(token_url, json={"app_id": fs_id, "app_secret": fs_secret}).json()
+              app_token = token_res.get('app_access_token')
+              if app_token:
+                  send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+                  headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
+                  payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
+                  requests.post(send_url, headers=headers, json=payload)
           EOF
 
-      - name: Final Sync & Keep Alive
-        if: always()
-        run: |
-          mkdir -p .openclaw-data/config
-          cp -r /home/runner/openclaw-src/config/* .openclaw-data/config/ 2>/dev/null || true
-          cp /home/runner/openclaw-src/openclaw.json .openclaw-data/ 2>/dev/null || true
-          git config user.name "OpenClaw-Bot"
-          git config user.email "bot@openclaw.local"
-          git add .openclaw-data/
-          git commit -m "chore: final sync openclaw configuration" && git push origin main || echo "Final sync: No changes"
-          sleep 21600
+      - name: Keep Alive
+        run: sleep 21600
