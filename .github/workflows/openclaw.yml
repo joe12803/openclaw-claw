@@ -105,7 +105,6 @@ jobs:
           echo "Waiting for Cloudflare Tunnel URL (Max 60s)..."
           T_COUNT=0
           while [ $T_COUNT -lt 20 ]; do
-            # 提取 URL
             DETECTED=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
             if [ -n "$DETECTED" ]; then
               echo "URL_DETECTED=$DETECTED" >> $GITHUB_ENV
@@ -117,7 +116,6 @@ jobs:
           done
 
       - name: Notify Deployment
-        # 只要检测到 URL 就发送通知
         if: always()
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
@@ -126,42 +124,41 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
-          # 使用步骤中检测到的环境变量
           FINAL_URL: ${{ env.URL_DETECTED }}
         run: |
           python3 - <<EOF
           import os, requests, json
           url = os.environ.get('FINAL_URL')
           if not url:
-              print("❌ No Tunnel URL found in environment. Notification aborted.")
+              print("❌ No Tunnel URL found. Skipping.")
               exit(0)
           
           token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
           msg = f"🚀 OpenClaw 部署成功！\n🔗 API Base: {url}/v1\n🔑 Gateway Token: {token}\n🤖 测试模型: gemini-3-flash"
           
-          print(f"Preparing to send notification for URL: {url}")
-          
           # Telegram
           tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-          tg_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-          if tg_token and tg_chat_id:
-              r = requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_chat_id, "text": msg})
-              print(f"Telegram status: {r.status_code}")
+          tg_id = os.environ.get('TELEGRAM_CHAT_ID')
+          if tg_token and tg_id:
+              r = requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
+              print(f"Telegram Status: {r.status_code}, Body: {r.text}")
           
           # Feishu
           fs_id = os.environ.get('FEISHU_APP_ID')
           fs_secret = os.environ.get('FEISHU_APP_SECRET')
           fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
           if fs_id and fs_secret and fs_chat_id:
-              token_url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
-              token_res = requests.post(token_url, json={"app_id": fs_id, "app_secret": fs_secret}).json()
+              # 自动判断 ID 类型
+              id_type = "chat_id" if fs_chat_id.startswith("oc_") else "open_id"
+              
+              token_res = requests.post("https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal", json={"app_id": fs_id, "app_secret": fs_secret}).json()
               app_token = token_res.get('app_access_token')
               if app_token:
-                  send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+                  send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={id_type}"
                   headers = {"Authorization": f"Bearer {app_token}", "Content-Type": "application/json"}
                   payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
                   r = requests.post(send_url, headers=headers, json=payload)
-                  print(f"Feishu status: {r.status_code}")
+                  print(f"Feishu Status: {r.status_code}, Body: {r.text}")
           EOF
 
       - name: Keep Alive
