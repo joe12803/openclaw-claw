@@ -41,7 +41,7 @@ jobs:
           pnpm install
           pnpm build
 
-      - name: Configure OpenClaw (Fix CORS & Allowed Origins)
+      - name: Configure OpenClaw (Absolute Alignment)
         env:
           RELAY_API_KEY: ${{ github.event.inputs.relay_api_key }}
           RELAY_API_BASE: ${{ github.event.inputs.relay_api_base }}
@@ -50,17 +50,19 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         run: |
-          cd ~/openclaw-src
-          mkdir -p config
+          # 建立标准配置目录
+          mkdir -p /home/runner/.openclaw/config
           
-          cat <<EOF > config/config.json
+          # 构造配置：暂时禁用 auth 以排除登录点击无反应的问题
+          cat <<EOF > /home/runner/.openclaw/config/config.json
           {
             "server": { "port": 18789, "host": "0.0.0.0" },
             "gateway": {
-              "auth": { "enabled": true, "token": "${GATEWAY_TOKEN:-openclaw-secret}" },
+              "auth": { "enabled": false },
               "controlUi": {
                 "enabled": true,
-                "allowedOrigins": ["*"]
+                "allowedOrigins": ["*"],
+                "public": true
               }
             },
             "providers": [
@@ -79,22 +81,37 @@ jobs:
             ],
             "adapters": {
               "webui": { "enabled": true, "config": { "port": 18789 } },
-              "telegram": { "enabled": true, "config": { "token": "${TELEGRAM_BOT_TOKEN}" } },
-              "feishu": { "enabled": true, "config": { "appId": "${FEISHU_APP_ID}", "appSecret": "${FEISHU_APP_SECRET}" } }
+              "telegram": {
+                "enabled": true,
+                "config": { "token": "${TELEGRAM_BOT_TOKEN}" }
+              },
+              "feishu": {
+                "enabled": true,
+                "config": {
+                  "appId": "${FEISHU_APP_ID}",
+                  "appSecret": "${FEISHU_APP_SECRET}"
+                }
+              }
             },
             "agents": {
               "main": { "model": "relay-api/gemini-3-flash" }
             }
           }
           EOF
-          cp config/config.json ./openclaw.json
+          
+          # 同步到所有可能的读取点
+          cp /home/runner/.openclaw/config/config.json ~/openclaw-src/openclaw.json
+          cp /home/runner/.openclaw/config/config.json ~/openclaw-src/config/config.json
 
       - name: Start OpenClaw
         run: |
+          export OPENCLAW_CONFIG_DIR=/home/runner/.openclaw
           export OPENCLAW_NONINTERACTIVE=true
           export CI=true
           sudo apt-get install -y expect
           cd ~/openclaw-src
+          
+          # 使用绝对配置路径启动
           unbuffer ./openclaw.mjs gateway --verbose --allow-unconfigured > openclaw.log 2>&1 &
           
           echo "Waiting for OpenClaw Gateway..."
@@ -102,7 +119,7 @@ jobs:
           COUNT=0
           while [ $COUNT -lt $MAX_RETRIES ]; do
             if curl -s http://localhost:18789 > /dev/null; then
-              echo "✅ OpenClaw Gateway & WebUI are live!"
+              echo "✅ OpenClaw is up with ABSOLUTE config!"
               break
             fi
             sleep 5
@@ -130,28 +147,23 @@ jobs:
             DETECTED=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' tunnel.log | head -n 1)
             if [ -n "$DETECTED" ]; then
               echo "URL_DETECTED=$DETECTED" >> $GITHUB_ENV
-              echo "Detected URL: $DETECTED"
               break
             fi
             sleep 3
             T_COUNT=$((T_COUNT+1))
           done
           
-          if [ -z "$DETECTED" ]; then exit 0; fi
-
-          python3 - <<EOF
+          if [ -n "$DETECTED" ]; then
+            python3 - <<EOF
           import os, requests, json
           url = "$DETECTED"
-          token = os.environ.get('GATEWAY_TOKEN') or 'openclaw-secret'
-          msg = f"🚀 OpenClaw 部署成功！\n🔗 WebUI/API: {url}\n🔑 Token: {token}\n🤖 默认模型: gemini-3-flash"
+          msg = f"🚀 OpenClaw (免登录测试版) 部署成功！\n🔗 链接: {url}\n🤖 默认模型: gemini-3-flash"
           
-          # Telegram
           tg_token = os.environ.get('TELEGRAM_BOT_TOKEN')
           tg_id = os.environ.get('TELEGRAM_CHAT_ID')
           if tg_token and tg_id:
               requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={"chat_id": tg_id, "text": msg})
           
-          # Feishu
           fs_id = os.environ.get('FEISHU_APP_ID')
           fs_secret = os.environ.get('FEISHU_APP_SECRET')
           fs_chat_id = os.environ.get('FEISHU_CHAT_ID')
@@ -165,6 +177,7 @@ jobs:
                   payload = {"receive_id": fs_chat_id, "msg_type": "text", "content": json.dumps({"text": msg})}
                   requests.post(send_url, headers=headers, json=payload)
           EOF
+          fi
 
       - name: Keep Alive
         run: sleep 21600
