@@ -1,5 +1,8 @@
 name: OpenClaw Runner
 on:
+  push:
+    paths:
+      - .github/workflows/openclaw.yml
   workflow_dispatch:
     inputs:
       relay_api_base:
