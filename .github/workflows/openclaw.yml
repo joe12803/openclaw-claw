@@ -90,10 +90,8 @@ jobs:
               },
               "feishu": {
                 "enabled": true,
-                "config": {
-                  "appId": "${FEISHU_APP_ID}",
-                  "appSecret": "${FEISHU_APP_SECRET}"
-                }
+                "appId": "${FEISHU_APP_ID}",
+                "appSecret": "${FEISHU_APP_SECRET}"
               }
             },
             "agents": {
